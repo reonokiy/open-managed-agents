@@ -82,6 +82,10 @@ egress and background process handles are not implemented. See
 [`packages/sandbox-adapter-openshell/README.md`](https://github.com/reonokiy/open-managed-agents/blob/codex/openshell-sandbox/packages/sandbox-adapter-openshell/README.md)
 for configuration, compatibility limitations, and the opt-in live test.
 
+File operations use native SFTP over the Gateway's SSH relay, with pinned SSH
+host fingerprints and per-operation session cleanup. The workload's canonical
+default working directory must be `/workspace`; it is the SFTP virtual root.
+
 An empty, unknown, or `subprocess` value throws. `OPENMA_TEST_SANDBOX_PROVIDER=local-subprocess`
 loads `@open-managed-agents/sandbox/adapters/local-subprocess` only when
 `NODE_ENV=test`. That adapter has no isolation boundary.

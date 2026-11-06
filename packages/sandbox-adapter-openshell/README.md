@@ -13,8 +13,10 @@ OpenMA host; this adapter does not configure OpenShell inference routing.
 - SDK contract inspected: NVIDIA/OpenShell **v0.1.4**,
   `sdk/typescript/src/client.ts` and `transport.ts`. The required methods also
   exist at main commit `e9ba8d9e3568f7ca1a6320914d0b17e0572fac2d`.
-- Unit tests use an injected SDK client, not a real Gateway. A live acceptance
-  test is included but has **not** been run against OpenShell 0.1.4.
+- Tests include an in-process SSH/SFTP server with the real `ssh2` client and
+  an emulated Gateway relay, plus injected-client lifecycle tests. They do not
+  run the OpenShell runtime or a real Gateway. The opt-in live acceptance test
+  has **not** been run against OpenShell 0.1.4.
 - Install a Gateway-compatible, built `@nvidia/openshell-sdk` into the runtime
   package's module resolution path. NVIDIA currently declares GitHub Packages
   as its SDK registry; do not assume the package is available on npmjs.org.
@@ -24,13 +26,18 @@ OpenMA host; this adapter does not configure OpenShell inference routing.
 - Supply a dedicated mTLS client identity authorized for the chosen workspace.
   Keep the private key in a read-only runtime secret mount, never in the sandbox,
   source tree, image, or command line. No CLI profile or interactive login is read.
-- The sandbox image must provide `/bin/sh`, `mkdir`, and `cat`, with a writable
-  `/workspace`. Gateway policies and runtime restrictions remain operator-owned.
+- The workload's canonical default working directory must be `/workspace`,
+  writable by the workload. The adapter verifies it using `/bin/sh` and its
+  `pwd` builtin when creating or reattaching. OpenShell's SFTP root is this
+  directory; merely creating `/workspace` in an unrelated workload root is
+  insufficient. Gateway policies and runtime restrictions remain operator-owned.
 
-The v0.1.4 SDK exposes the required direct exec, stdin, readiness and mTLS
+The v0.1.4 SDK exposes the required direct exec, readiness, mTLS and raw
+`CreateSshSession`, `ForwardTcp`, and `RevokeSshSession`
 interfaces. This is source-level compatibility evidence, not a live acceptance
 result. Match SDK/Gateway versions and run the live acceptance test before
-using this in a deployment. There is no fallback to SSH or `kubectl exec`.
+using this in a deployment. Files use SFTP exclusively; there is no fallback
+to shell-based file I/O, the CLI, or `kubectl exec`.
 
 ## Node configuration
 
@@ -44,6 +51,7 @@ OPENSHELL_IMAGE=registry.example.test/agent-tools:reviewed
 OPENSHELL_CLIENT_CERT_FILE=/run/openshell/client.crt
 OPENSHELL_CLIENT_KEY_FILE=/run/openshell/client.key
 OPENSHELL_READY_TIMEOUT_SECONDS=120
+OPENSHELL_FILE_TIMEOUT_MS=120000
 # Optional private CA; omit to use system trust roots.
 # OPENSHELL_CA_FILE=/run/openshell/ca.crt
 ```
@@ -61,7 +69,7 @@ is intentionally no insecure verification switch or plaintext option.
 | --- | --- |
 | Unique sandbox per cold allocation | Implemented |
 | Execute shell commands, timeout, environment | Implemented |
-| Text and binary file read/write | Implemented; contents use exec stdin/stdout |
+| Text and binary file read/write | Native SFTP over the Gateway SSH relay |
 | Reattach to the same running sandbox | Implemented; checks UUID, workspace, session, allocation and tenant labels |
 | Delete the sandbox | Implemented; checks UUID before name-based delete |
 | Restart a stopped sandbox | Not implemented; fails explicitly |
@@ -83,9 +91,29 @@ do not automatically get separate OpenShell authorization boundaries. Use
 separate service instances/workspaces/identities when tenant-level isolation
 requires it. Labels are consistency checks, not a substitute for Gateway RBAC.
 
-File paths are interpreted inside the sandbox, relative to `/workspace` unless
-absolute. They are not restricted to that directory: enforce filesystem access
-using OpenShell policy. The adapter never executes commands on the OpenMA host.
+## SFTP lifecycle and paths
+
+Each file operation creates a short-lived SSH session scoped to the sandbox and
+workspace, opens the `ForwardTcp` SSH target, verifies the SSH host key against
+the Gateway's SHA256 fingerprint, and requests the native `sftp` subsystem.
+Authentication uses the Gateway's existing mTLS transport and session token;
+no SSH private key, local SSH config, direct port 22, or local CLI is required.
+Missing or mismatched host fingerprints fail closed.
+
+Reads and writes use SFTP file handles in 32 KiB chunks. Parent directories are
+created with SFTP. Both success and failure close the handle and connection and
+attempt explicit token revocation using an independent cleanup deadline.
+The operation deadline also cancels stalled handshakes and transfers. Sessions
+are not pooled; files are returned in memory as required by `SandboxPort`.
+Writes truncate the target; interrupted writes can leave partial files.
+
+Relative paths and `/workspace/...` map to SFTP `/...`. Other absolute paths,
+NULs and any `..` component are rejected before connecting. The OpenShell
+runtime additionally confines SFTP resolution to its configured root.
+Features requiring file I/O outside `/workspace`, such as file-syncing a Memory
+Store under `/mnt/memory`, are not supported by this SFTP path yet.
+Shell commands still execute through the exec RPC under the Gateway's policies.
+The adapter never executes commands on the OpenMA host.
 
 ## Tests
 

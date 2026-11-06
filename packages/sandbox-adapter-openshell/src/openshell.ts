@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { posix } from "node:path";
+import { openSftp, sftpPath, type SftpConnector, type SftpFiles, type SshGateway } from "./sftp";
 import type {
   SandboxCheckpointHandle, SandboxCheckpointKind, SandboxFactory, SandboxFactoryContext,
   SandboxFactoryEnv, SandboxPort, SandboxProviderPort, SandboxRuntimeHandle,
@@ -30,12 +30,13 @@ export interface OpenShellClientPort {
   create(spec: {
     name: string; workspace: string; image: string; labels: Record<string, string>;
   }): Promise<OpenShellRef>;
-  get(name: string, options: { workspace: string }): Promise<OpenShellRef>;
+  get(name: string, options: { workspace: string; signal?: AbortSignal }): Promise<OpenShellRef>;
   waitReady(name: string, timeoutSecs: number, options: { workspace: string }): Promise<OpenShellRef>;
   delete(name: string, options: { workspace: string; allowMissing: boolean }): Promise<unknown>;
   exec(name: string, command: string[], options: OpenShellExecOptions): Promise<{
     exitCode: number; stdout: Uint8Array; stderr: Uint8Array;
   }>;
+  raw?: SshGateway;
 }
 export interface OpenShellConnectionOptions {
   gateway: string;
@@ -49,6 +50,7 @@ export interface OpenShellOptions {
   gateway: string;
   workspace: string;
   readyTimeoutSeconds: number;
+  fileTimeoutMs: number;
   caFile?: string;
   certFile: string;
   keyFile: string;
@@ -69,22 +71,21 @@ export function optionsFromEnvironment(env: SandboxFactoryEnv): OpenShellOptions
   if (!Number.isSafeInteger(readyTimeoutSeconds) || readyTimeoutSeconds <= 0) {
     throw new Error("OPENSHELL_READY_TIMEOUT_SECONDS must be a positive integer");
   }
+  const fileTimeoutMs = Number(env.OPENSHELL_FILE_TIMEOUT_MS ?? 120_000);
+  if (!Number.isSafeInteger(fileTimeoutMs) || fileTimeoutMs <= 0 || fileTimeoutMs > 2 ** 32 - 1) {
+    throw new Error("OPENSHELL_FILE_TIMEOUT_MS must be a positive uint32 integer");
+  }
   const workspace = env.OPENSHELL_WORKSPACE ?? "default";
   if (!workspace.trim()) throw new Error("OPENSHELL_WORKSPACE must not be empty");
   return {
     gateway: gateway.origin, workspace,
-    readyTimeoutSeconds,
+    readyTimeoutSeconds, fileTimeoutMs,
     caFile: env.OPENSHELL_CA_FILE,
     certFile: env.OPENSHELL_CLIENT_CERT_FILE,
     keyFile: env.OPENSHELL_CLIENT_KEY_FILE,
   };
 }
 
-const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
-function filePath(path: string): string {
-  if (!path || path.includes("\0")) throw new Error("Invalid sandbox file path");
-  return posix.resolve("/workspace", path);
-}
 const unsupported = (): never => { throw new Error("OpenShell adapter does not support checkpoints or suspension"); };
 
 export class OpenShellSandbox implements SandboxPort, SandboxRuntimePort {
@@ -92,6 +93,8 @@ export class OpenShellSandbox implements SandboxPort, SandboxRuntimePort {
   constructor(
     private readonly client: OpenShellClientPort,
     private readonly ref: OpenShellRef,
+    private readonly connectSftp: SftpConnector = openSftp,
+    private readonly fileTimeoutMs = 120_000,
   ) {}
 
   runtimeHandle(): SandboxRuntimeHandle {
@@ -131,21 +134,23 @@ export class OpenShellSandbox implements SandboxPort, SandboxRuntimePort {
       + (result.exitCode ? `\n[exit ${result.exitCode}]` : "");
   }
   async readFileBytes(path: string): Promise<Uint8Array> {
-    const result = await this.run(["cat", "--", filePath(path)]);
-    if (result.exitCode !== 0) throw new Error("OpenShell file read failed");
-    return result.stdout;
+    const target = sftpPath(path);
+    return this.withFiles(files => files.readFile(target));
   }
   async readFile(path: string): Promise<string> {
     return Buffer.from(await this.readFileBytes(path)).toString("utf8");
   }
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
-    const target = filePath(path);
-    // File contents use stdin, never command interpolation or host temp files.
-    const result = await this.run([
-      "/bin/sh", "-c", `mkdir -p -- ${quote(posix.dirname(target))} && cat > ${quote(target)}`,
-    ], undefined, Buffer.from(bytes));
-    if (result.exitCode !== 0) throw new Error("OpenShell file write failed");
+    const target = sftpPath(path);
+    await this.withFiles(files => files.writeFile(target, bytes));
     return "ok";
+  }
+  private async withFiles<T>(action: (files: SftpFiles) => Promise<T>): Promise<T> {
+    const files = await this.connectSftp(this.client, this.ref, AbortSignal.timeout(this.fileTimeoutMs));
+    let failed = false;
+    try { return await action(files); }
+    catch (error) { failed = true; throw error; }
+    finally { await files.close().catch(error => { if (!failed) throw error; }); }
   }
   async writeFile(path: string, content: string): Promise<string> {
     return this.writeFileBytes(path, Buffer.from(content, "utf8"));
@@ -172,7 +177,17 @@ async function sdkConnect(options: OpenShellConnectionOptions): Promise<OpenShel
 }
 
 /** Override the connector for custom hosts and deterministic contract tests. */
-export function createOpenShellProvider(connect: OpenShellConnector = sdkConnect): SandboxProviderPort<OpenShellSandbox> {
+export function createOpenShellProvider(
+  connect: OpenShellConnector = sdkConnect, connectSftp: SftpConnector = openSftp,
+): SandboxProviderPort<OpenShellSandbox> {
+  async function verifyWorkdir(client: OpenShellClientPort, ref: OpenShellRef): Promise<void> {
+    const result = await client.exec(ref.name, ["/bin/sh", "-c", "pwd -P"], {
+      workspace: ref.workspace, timeoutSecs: 30, noLoginShell: true, signal: AbortSignal.timeout(30_000),
+    });
+    if (result.exitCode !== 0 || Buffer.from(result.stdout).toString("utf8").trim() !== "/workspace") {
+      throw new Error("OpenShell workload directory must be /workspace for SFTP and exec to share files");
+    }
+  }
   async function connection(env: SandboxFactoryEnv) {
     const options = optionsFromEnvironment(env);
     const [clientCert, clientKey, caCert] = await Promise.all([
@@ -200,11 +215,8 @@ export function createOpenShellProvider(connect: OpenShellConnector = sdkConnect
       try {
         const ready = await client.waitReady(ref.name, options.readyTimeoutSeconds, { workspace: options.workspace });
         if (ready.id !== ref.id || ready.workspace !== options.workspace) throw new Error("Unexpected OpenShell allocation identity");
-        const sandbox = new OpenShellSandbox(client, ready);
-        const result = await client.exec(ready.name, ["mkdir", "-p", "/workspace"], {
-          workspace: options.workspace, timeoutSecs: 30, noLoginShell: true, signal: AbortSignal.timeout(30_000),
-        });
-        if (result.exitCode !== 0) throw new Error("Cannot initialize OpenShell workspace");
+        await verifyWorkdir(client, ready);
+        const sandbox = new OpenShellSandbox(client, ready, connectSftp, options.fileTimeoutMs);
         return sandbox;
       } catch (error) {
         // Never turn a failed create into attaching some other session's sandbox.
@@ -235,7 +247,8 @@ export function createOpenShellProvider(connect: OpenShellConnector = sdkConnect
       if (ref.phase !== "ready" && ref.phase !== "running") {
         throw new Error("OpenShell sandbox is not running; automatic restart is not supported");
       }
-      return new OpenShellSandbox(client, ref);
+      await verifyWorkdir(client, ref);
+      return new OpenShellSandbox(client, ref, connectSftp, options.fileTimeoutMs);
     },
     async restore() { return unsupported(); },
   };

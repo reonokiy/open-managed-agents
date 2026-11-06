@@ -4,6 +4,7 @@ import {
   createOpenShellProvider, OpenShellSandbox, optionsFromEnvironment, sandboxFactory,
   type OpenShellClientPort, type OpenShellRef,
 } from "../src/index";
+import type { SftpConnector, SftpFiles } from "../src/sftp";
 
 vi.mock("node:fs/promises", () => ({ readFile: vi.fn(async () => Buffer.alloc(0)) }));
 
@@ -18,6 +19,8 @@ const ctx = { sessionId: "session-test", allocationId: "allocation-a", workspace
 const ok = () => ({ exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
 let client: OpenShellClientPort;
 let refs: Map<string, OpenShellRef>;
+let files: SftpFiles;
+let connectFiles: SftpConnector;
 beforeEach(() => {
   refs = new Map();
   client = {
@@ -33,10 +36,12 @@ beforeEach(() => {
     }),
     waitReady: vi.fn(async name => refs.get(name)!),
     delete: vi.fn(async name => { refs.delete(name); }),
-    exec: vi.fn(async () => ok()),
+    exec: vi.fn(async () => ({ ...ok(), stdout: Buffer.from("/workspace\n") })),
   };
+  files = { readFile: vi.fn(async () => Buffer.alloc(0)), writeFile: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+  connectFiles = vi.fn(async () => files);
 });
-const provider = () => createOpenShellProvider(async () => client);
+const provider = () => createOpenShellProvider(async () => client, connectFiles);
 
 describe("OpenShell configuration", () => {
   it("keeps TLS verification enabled and requires paired mTLS files", () => {
@@ -51,6 +56,9 @@ describe("OpenShell configuration", () => {
   });
   it.each(["0", "-1", "NaN", "1.5"])("rejects invalid readiness timeout %s", value => {
     expect(() => optionsFromEnvironment({ ...env, OPENSHELL_READY_TIMEOUT_SECONDS: value })).toThrow(/positive/);
+  });
+  it.each(["0", "-1", "1.5", "4294967296"])("rejects invalid file timeout %s", value => {
+    expect(() => optionsFromEnvironment({ ...env, OPENSHELL_FILE_TIMEOUT_MS: value })).toThrow(/uint32/);
   });
 });
 
@@ -81,10 +89,16 @@ describe("OpenShell sandbox lifecycle", () => {
     expect(refs.size).toBe(0);
     expect(client.delete).toHaveBeenCalledTimes(1);
   });
-  it("cleans up an allocation if workspace initialization fails", async () => {
+  it("cleans up an allocation if the workload root cannot be verified", async () => {
     vi.mocked(client.exec).mockResolvedValueOnce({ ...ok(), exitCode: 1 });
-    await expect(provider().create(ctx, env)).rejects.toThrow(/initialize/);
+    await expect(provider().create(ctx, env)).rejects.toThrow(/workload directory/);
     expect(refs.size).toBe(0);
+  });
+  it("rejects a workload root different from the SFTP mapping instead of silently writing elsewhere", async () => {
+    vi.mocked(client.exec).mockResolvedValueOnce({ ...ok(), stdout: Buffer.from("/sandbox\n") });
+    await expect(provider().create(ctx, env)).rejects.toThrow(/workload directory/);
+    expect(client.delete).toHaveBeenCalledTimes(1);
+    expect(connectFiles).not.toHaveBeenCalled();
   });
   it("does not delete a replacement when readiness observes a changed UUID", async () => {
     vi.mocked(client.waitReady).mockImplementationOnce(async name => {
@@ -150,22 +164,25 @@ describe("OpenShell tool execution", () => {
       timeoutSecs: 2, noLoginShell: true, signal: expect.any(AbortSignal),
     }));
   });
-  it("keeps binary writes on stdin and quotes shell metacharacters in paths", async () => {
+  it("uses SFTP for binary files and treats metacharacters as literal path bytes", async () => {
     const s = await sandbox();
     const bytes = Buffer.from([0, 255, 1, 10]);
     await s.writeFileBytes("a'b;$(id)/data.bin", bytes);
-    const [, command, options] = vi.mocked(client.exec).mock.calls.at(-1)!;
-    expect(command).toEqual(["/bin/sh", "-c", "mkdir -p -- '/workspace/a'\\''b;$(id)' && cat > '/workspace/a'\\''b;$(id)/data.bin'"]);
-    expect(options.stdin).toEqual(bytes);
-    vi.mocked(client.exec).mockResolvedValueOnce({ ...ok(), stdout: bytes });
-    expect(await s.readFileBytes("data.bin")).toEqual(bytes);
-    expect(client.exec).toHaveBeenLastCalledWith(expect.any(String), ["cat", "--", "/workspace/data.bin"], expect.anything());
+    expect(files.writeFile).toHaveBeenCalledWith("/a'b;$(id)/data.bin", bytes);
+    vi.mocked(files.readFile).mockResolvedValueOnce(bytes);
+    expect(await s.readFileBytes("/workspace/data.bin")).toEqual(bytes);
+    expect(files.readFile).toHaveBeenCalledWith("/data.bin");
+    expect(files.close).toHaveBeenCalledTimes(2);
+    expect(client.exec).toHaveBeenCalledTimes(1); // Only the workload-root probe.
   });
-  it("fails file operations on nonzero exit, without including command output in exceptions", async () => {
+  it("closes SFTP after a file failure and preserves the original error if cleanup also fails", async () => {
     const s = await sandbox();
-    vi.mocked(client.exec).mockResolvedValue({ ...ok(), exitCode: 1 });
-    await expect(s.readFile("missing")).rejects.toThrow("OpenShell file read failed");
-    await expect(s.writeFile("missing", "content")).rejects.toThrow("OpenShell file write failed");
+    vi.mocked(files.readFile).mockRejectedValueOnce(new Error("missing file"));
+    vi.mocked(files.close).mockRejectedValueOnce(new Error("cleanup failed"));
+    await expect(s.readFile("missing")).rejects.toThrow("missing file");
+    expect(files.close).toHaveBeenCalledTimes(1);
+    vi.mocked(files.close).mockRejectedValueOnce(new Error("revoke failed"));
+    await expect(s.writeFile("data", "content")).rejects.toThrow("revoke failed");
   });
   it("rejects invalid paths and timeouts", async () => {
     const s = await sandbox();

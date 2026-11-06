@@ -8,6 +8,6 @@
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": { "@open-managed-agents/sandbox": "workspace:*" },
-  "devDependencies": { "@types/node": "^26.6.6", "vitest": "^5.0.5" }
+  "dependencies": { "@open-managed-agents/sandbox": "workspace:*", "ssh2": "1.17.0" },
+  "devDependencies": { "@types/node": "^26.6.6", "@types/ssh2": "1.15.5", "vitest": "^5.0.5" }
 }
