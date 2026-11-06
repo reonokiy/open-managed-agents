@@ -1,0 +1,13 @@
+{
+  "name": "@open-managed-agents/sandbox-adapter-openshell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": { "@open-managed-agents/sandbox": "workspace:*" },
+  "devDependencies": { "@types/node": "^26.6.6", "vitest": "^5.0.5" }
+}

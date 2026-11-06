@@ -71,7 +71,16 @@ factory reads only its own keys (`E2B_API_KEY`, `BOXRUN_URL`, `SANDBOX_IMAGE`,
 | `boxrun` | `@open-managed-agents/sandbox-adapter-boxrun` |
 | `daytona` | `@open-managed-agents/sandbox-adapter-daytona` |
 | `opensandbox` | `@open-managed-agents/sandbox-adapter-opensandbox` |
+| `openshell` (experimental) | `@open-managed-agents/sandbox-adapter-openshell` |
 | `e2b` | `@open-managed-agents/sandbox-adapter-e2b` |
+
+The OpenShell adapter is an experimental **external-harness tool sandbox**,
+not an in-sandbox harness runtime. It requires a separately installed NVIDIA
+TypeScript SDK, a compatible Gateway, and dedicated mTLS identity files. It
+supports commands and text/binary files; snapshots, suspend/resume, credential
+egress and background process handles are not implemented. See
+[`packages/sandbox-adapter-openshell/README.md`](https://github.com/reonokiy/open-managed-agents/blob/codex/openshell-sandbox/packages/sandbox-adapter-openshell/README.md)
+for configuration, compatibility limitations, and the opt-in live test.
 
 An empty, unknown, or `subprocess` value throws. `OPENMA_TEST_SANDBOX_PROVIDER=local-subprocess`
 loads `@open-managed-agents/sandbox/adapters/local-subprocess` only when

@@ -780,6 +780,9 @@ importers:
       '@open-managed-agents/sandbox-adapter-opensandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox-adapter-opensandbox
+      '@open-managed-agents/sandbox-adapter-openshell':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-adapter-openshell
       '@open-managed-agents/schema':
         specifier: workspace:*
         version: link:../../packages/schema
@@ -3889,6 +3892,19 @@ importers:
       '@open-managed-agents/managed-runtime-sandbox':
         specifier: workspace:*
         version: link:../managed-runtime-sandbox
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.0)(@types/node@26.6.6)(@vitest/coverage-v8@5.0.5)(jsdom@29.1.1(@noble/hashes@2.2.0))(msw@2.14.6(@types/node@26.6.6)(typescript@7.0.2))(vite@7.3.6(@types/node@26.6.6)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1))
+
+  packages/sandbox-adapter-openshell:
+    dependencies:
+      '@open-managed-agents/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+    devDependencies:
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
