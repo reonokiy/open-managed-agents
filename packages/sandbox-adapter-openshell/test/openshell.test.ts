@@ -167,7 +167,7 @@ describe("OpenShell tool execution", () => {
   it("uses SFTP for binary files and treats metacharacters as literal path bytes", async () => {
     const s = await sandbox();
     const bytes = Buffer.from([0, 255, 1, 10]);
-    await s.writeFileBytes("a'b;$(id)/data.bin", bytes);
+    await s.writeFileBytes("/workspace/a'b;$(id)/data.bin", bytes);
     expect(files.writeFile).toHaveBeenCalledWith("/a'b;$(id)/data.bin", bytes);
     vi.mocked(files.readFile).mockResolvedValueOnce(bytes);
     expect(await s.readFileBytes("/workspace/data.bin")).toEqual(bytes);
@@ -179,14 +179,14 @@ describe("OpenShell tool execution", () => {
     const s = await sandbox();
     vi.mocked(files.readFile).mockRejectedValueOnce(new Error("missing file"));
     vi.mocked(files.close).mockRejectedValueOnce(new Error("cleanup failed"));
-    await expect(s.readFile("missing")).rejects.toThrow("missing file");
+    await expect(s.readFile("/workspace/missing")).rejects.toThrow("missing file");
     expect(files.close).toHaveBeenCalledTimes(1);
     vi.mocked(files.close).mockRejectedValueOnce(new Error("revoke failed"));
-    await expect(s.writeFile("data", "content")).rejects.toThrow("revoke failed");
+    await expect(s.writeFile("/workspace/data", "content")).rejects.toThrow("revoke failed");
   });
   it("rejects invalid paths and timeouts", async () => {
     const s = await sandbox();
-    await expect(s.readFile("bad\0path")).rejects.toThrow(/Invalid/);
+    await expect(s.readFile("/workspace/bad\0path")).rejects.toThrow(/NUL/);
     await expect(s.exec("pwd", 0)).rejects.toThrow(/positive/);
   });
   it("exposes neither native credential egress nor in-sandbox harness transport", async () => {

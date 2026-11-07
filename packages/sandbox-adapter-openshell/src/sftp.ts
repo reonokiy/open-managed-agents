@@ -35,16 +35,22 @@ export interface SshGateway {
   }>;
 }
 
-/** Translate OpenMA paths to the SFTP virtual root, which is the workload cwd. */
+const WORKSPACE_ROOT = "/workspace";
+const boundaryError = (path: string, reason: string) =>
+  new Error(`OpenShell file access is limited to ${WORKSPACE_ROOT}; ${reason}: ${JSON.stringify(path)}`);
+
+/**
+ * Validate an absolute OpenMA path under /workspace and map it to the SFTP
+ * virtual root (the workload directory). Nothing is rewritten implicitly:
+ * relative paths, other absolute paths and traversal are rejected with an
+ * explicit boundary error.
+ */
 export function sftpPath(path: string): string {
-  if (!path || path.includes("\0") || path.split("/").includes("..")) throw new Error("Invalid sandbox file path");
-  if (posix.isAbsolute(path)) {
-    if (path !== "/workspace" && !path.startsWith("/workspace/")) {
-      throw new Error("SFTP file paths must be under /workspace");
-    }
-    path = path.slice("/workspace".length);
-  }
-  return posix.resolve("/", path);
+  if (!path || path.includes("\0")) throw new Error("Invalid sandbox file path: empty or contains NUL");
+  if (!posix.isAbsolute(path)) throw boundaryError(path, "relative paths are not resolved");
+  if (path !== WORKSPACE_ROOT && !path.startsWith(`${WORKSPACE_ROOT}/`)) throw boundaryError(path, "path is outside it");
+  if (path.split("/").includes("..")) throw boundaryError(path, "'..' segments are not allowed");
+  return posix.resolve("/", path.slice(WORKSPACE_ROOT.length) || "/");
 }
 
 /** Byte-stream socket for ssh2 over ForwardTcp. Node streams bound both queues. */

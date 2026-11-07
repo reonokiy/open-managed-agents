@@ -107,11 +107,12 @@ The operation deadline also cancels stalled handshakes and transfers. Sessions
 are not pooled; files are returned in memory as required by `SandboxPort`.
 Writes truncate the target; interrupted writes can leave partial files.
 
-Relative paths and `/workspace/...` map to SFTP `/...`. Other absolute paths,
-NULs and any `..` component are rejected before connecting. The OpenShell
-runtime additionally confines SFTP resolution to its configured root.
-Features requiring file I/O outside `/workspace`, such as file-syncing a Memory
-Store under `/mnt/memory`, are not supported by this SFTP path yet.
+File tools accept only absolute paths under `/workspace`; `/workspace/...` maps
+to the SFTP root. Relative paths are rejected rather than resolved, and paths
+such as `/tmp/x`, `/mnt/memory/...`, paths containing `..` or NUL bytes fail
+before connecting with a `/workspace` boundary error. Features requiring file
+I/O outside `/workspace`, such as file-syncing a Memory Store under
+`/mnt/memory`, are not supported by this SFTP path yet.
 Shell commands still execute through the exec RPC under the Gateway's policies.
 The adapter never executes commands on the OpenMA host.
 

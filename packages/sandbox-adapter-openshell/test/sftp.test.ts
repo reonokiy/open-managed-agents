@@ -145,12 +145,17 @@ function fixture() {
 
 describe("OpenShell SFTP path and host identity", () => {
   it.each([
-    ["file.txt", "/file.txt"], ["/workspace/file.txt", "/file.txt"],
-    ["a'b;$(id)/data", "/a'b;$(id)/data"], ["dir/./file", "/dir/file"],
+    ["/workspace/file.txt", "/file.txt"], ["/workspace", "/"],
+    ["/workspace/a'b;$(id)/data", "/a'b;$(id)/data"], ["/workspace/dir/./file", "/dir/file"],
   ])("maps %s to virtual path %s", (path, expected) => { expect(sftpPath(path)).toBe(expected); });
-  it.each(["", "../file", "/workspace/../etc/passwd", "a/../b", "/etc/passwd", "/workspace-other/file", "a\0b"])(
-    "rejects ambiguous or outside paths %s", path => { expect(() => sftpPath(path)).toThrow(); },
-  );
+  it.each([
+    ["", /empty or contains NUL/], ["a\0b", /empty or contains NUL/],
+    ["file.txt", /relative paths are not resolved/], ["../file", /relative paths are not resolved/],
+    ["/etc/passwd", /path is outside it/], ["/tmp/x", /path is outside it/], ["/workspace-other/file", /path is outside it/],
+    ["/workspace/../etc/passwd", /'\.\.' segments are not allowed/],
+  ])("rejects %j with an explicit /workspace boundary error", (path, message) => {
+    expect(() => sftpPath(path)).toThrow(message);
+  });
   it("pins the raw SSH host key using the Gateway SHA256 fingerprint", () => {
     expect(verifyHostKey(fingerprint, publicKey)).toBe(true);
     expect(verifyHostKey(fingerprint, Buffer.from("different-public-key"))).toBe(false);
