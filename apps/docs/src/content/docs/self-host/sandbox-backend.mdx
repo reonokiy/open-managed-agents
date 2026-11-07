@@ -83,8 +83,12 @@ egress and background process handles are not implemented. See
 for configuration, compatibility limitations, and the opt-in live test.
 
 File operations use native SFTP over the Gateway's SSH relay, with pinned SSH
-host fingerprints and per-operation session cleanup. The workload's canonical
-default working directory must be `/workspace`; it is the SFTP virtual root.
+host fingerprints and per-operation session cleanup. Relative file paths receive
+a `/workspace/` prefix and absolute paths pass through unchanged, like other
+providers. The workload's default working directory is not probed or restricted.
+OpenShell still confines SFTP to its workload directory: absolute paths outside
+that directory may address different files than the same paths in exec. See the
+adapter README for the backend's virtual-root semantics.
 
 An empty, unknown, or `subprocess` value throws. `OPENMA_TEST_SANDBOX_PROVIDER=local-subprocess`
 loads `@open-managed-agents/sandbox/adapters/local-subprocess` only when

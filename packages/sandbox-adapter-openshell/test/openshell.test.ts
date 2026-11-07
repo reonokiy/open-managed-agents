@@ -89,15 +89,12 @@ describe("OpenShell sandbox lifecycle", () => {
     expect(refs.size).toBe(0);
     expect(client.delete).toHaveBeenCalledTimes(1);
   });
-  it("cleans up an allocation if the workload root cannot be verified", async () => {
-    vi.mocked(client.exec).mockResolvedValueOnce({ ...ok(), exitCode: 1 });
-    await expect(provider().create(ctx, env)).rejects.toThrow(/workload directory/);
-    expect(refs.size).toBe(0);
-  });
-  it("rejects a workload root different from the SFTP mapping instead of silently writing elsewhere", async () => {
-    vi.mocked(client.exec).mockResolvedValueOnce({ ...ok(), stdout: Buffer.from("/sandbox\n") });
-    await expect(provider().create(ctx, env)).rejects.toThrow(/workload directory/);
-    expect(client.delete).toHaveBeenCalledTimes(1);
+  it("creates and reattaches without probing or restricting the workload root", async () => {
+    const p = provider();
+    const s = await p.create(ctx, env);
+    await p.resume(s.runtimeHandle(), ctx, env);
+    expect(client.exec).not.toHaveBeenCalled();
+    expect(client.delete).not.toHaveBeenCalled();
     expect(connectFiles).not.toHaveBeenCalled();
   });
   it("does not delete a replacement when readiness observes a changed UUID", async () => {
@@ -167,13 +164,21 @@ describe("OpenShell tool execution", () => {
   it("uses SFTP for binary files and treats metacharacters as literal path bytes", async () => {
     const s = await sandbox();
     const bytes = Buffer.from([0, 255, 1, 10]);
-    await s.writeFileBytes("a'b;$(id)/data.bin", bytes);
-    expect(files.writeFile).toHaveBeenCalledWith("/a'b;$(id)/data.bin", bytes);
+    expect(await s.writeFileBytes("a'b;$(id)/data.bin", bytes)).toBe("/workspace/a'b;$(id)/data.bin");
+    expect(files.writeFile).toHaveBeenCalledWith("/workspace/a'b;$(id)/data.bin", bytes);
     vi.mocked(files.readFile).mockResolvedValueOnce(bytes);
     expect(await s.readFileBytes("/workspace/data.bin")).toEqual(bytes);
-    expect(files.readFile).toHaveBeenCalledWith("/data.bin");
+    expect(files.readFile).toHaveBeenCalledWith("/workspace/data.bin");
     expect(files.close).toHaveBeenCalledTimes(2);
-    expect(client.exec).toHaveBeenCalledTimes(1); // Only the workload-root probe.
+    expect(client.exec).not.toHaveBeenCalled();
+  });
+  it.each(["/tmp/data.bin", "/mnt/memory/data.bin"])("passes absolute path %s unchanged to SFTP", async path => {
+    const s = await sandbox();
+    const bytes = Buffer.from([1, 2, 3]);
+    expect(await s.writeFileBytes(path, bytes)).toBe(path);
+    await s.readFileBytes(path);
+    expect(files.writeFile).toHaveBeenCalledWith(path, bytes);
+    expect(files.readFile).toHaveBeenCalledWith(path);
   });
   it("closes SFTP after a file failure and preserves the original error if cleanup also fails", async () => {
     const s = await sandbox();

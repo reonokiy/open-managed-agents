@@ -26,11 +26,10 @@ OpenMA host; this adapter does not configure OpenShell inference routing.
 - Supply a dedicated mTLS client identity authorized for the chosen workspace.
   Keep the private key in a read-only runtime secret mount, never in the sandbox,
   source tree, image, or command line. No CLI profile or interactive login is read.
-- The workload's canonical default working directory must be `/workspace`,
-  writable by the workload. The adapter verifies it using `/bin/sh` and its
-  `pwd` builtin when creating or reattaching. OpenShell's SFTP root is this
-  directory; merely creating `/workspace` in an unrelated workload root is
-  insufficient. Gateway policies and runtime restrictions remain operator-owned.
+- Commands use `/workspace` as their working directory, matching other OpenMA
+  providers; the image must provide that directory. The adapter does not probe
+  or require the workload's default working directory to equal `/workspace`.
+  Gateway policies and runtime restrictions remain operator-owned.
 
 The v0.1.4 SDK exposes the required direct exec, readiness, mTLS and raw
 `CreateSshSession`, `ForwardTcp`, and `RevokeSshSession`
@@ -107,11 +106,17 @@ The operation deadline also cancels stalled handshakes and transfers. Sessions
 are not pooled; files are returned in memory as required by `SandboxPort`.
 Writes truncate the target; interrupted writes can leave partial files.
 
-Relative paths and `/workspace/...` map to SFTP `/...`. Other absolute paths,
-NULs and any `..` component are rejected before connecting. The OpenShell
-runtime additionally confines SFTP resolution to its configured root.
-Features requiring file I/O outside `/workspace`, such as file-syncing a Memory
-Store under `/mnt/memory`, are not supported by this SFTP path yet.
+Relative paths receive a `/workspace/` prefix; absolute paths pass unchanged to
+SFTP, matching the OpenSandbox, Daytona and LiteBox adapters. Writes return the
+target path. Empty paths and NULs are rejected; path traversal and access checks
+are delegated to the backend.
+
+OpenShell v0.1.4 confines SFTP to the workload directory, which is its virtual
+root. This server behavior still applies: with a `/workspace` workload root,
+`/workspace/a` addresses the real `/workspace/a`, but `/tmp/a` addresses
+`/workspace/tmp/a`, not the sandbox's `/tmp/a`. The adapter does not remove this
+backend restriction or guarantee identical paths between SFTP and exec outside
+the workload root. Memory/output mount support remains unimplemented.
 Shell commands still execute through the exec RPC under the Gateway's policies.
 The adapter never executes commands on the OpenMA host.
 
