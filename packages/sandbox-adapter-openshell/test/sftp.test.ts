@@ -145,14 +145,11 @@ function fixture() {
 
 describe("OpenShell SFTP path and host identity", () => {
   it.each([
-    ["file.txt", "/workspace/file.txt"], ["/workspace/file.txt", "/workspace/file.txt"],
-    ["a'b;$(id)/data", "/workspace/a'b;$(id)/data"], ["dir/./file", "/workspace/dir/./file"],
-    ["/tmp/data.bin", "/tmp/data.bin"], ["/mnt/memory/file", "/mnt/memory/file"],
-    ["../file", "/workspace/../file"], ["/workspace/../tmp/file", "/workspace/../tmp/file"],
-    ["/", "/"],
-  ])("maps %s to provider path %s", (path, expected) => { expect(sftpPath(path)).toBe(expected); });
-  it.each(["", "a\0b"])(
-    "rejects invalid paths %s", path => { expect(() => sftpPath(path)).toThrow(); },
+    ["file.txt", "/file.txt"], ["/workspace/file.txt", "/file.txt"],
+    ["a'b;$(id)/data", "/a'b;$(id)/data"], ["dir/./file", "/dir/file"],
+  ])("maps %s to virtual path %s", (path, expected) => { expect(sftpPath(path)).toBe(expected); });
+  it.each(["", "../file", "/workspace/../etc/passwd", "a/../b", "/etc/passwd", "/workspace-other/file", "a\0b"])(
+    "rejects ambiguous or outside paths %s", path => { expect(() => sftpPath(path)).toThrow(); },
   );
   it("pins the raw SSH host key using the Gateway SHA256 fingerprint", () => {
     expect(verifyHostKey(fingerprint, publicKey)).toBe(true);

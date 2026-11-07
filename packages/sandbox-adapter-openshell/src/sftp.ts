@@ -35,10 +35,16 @@ export interface SshGateway {
   }>;
 }
 
-/** Match other providers: default relative paths to /workspace; preserve absolute paths. */
+/** Translate OpenMA paths to the SFTP virtual root, which is the workload cwd. */
 export function sftpPath(path: string): string {
-  if (!path || path.includes("\0")) throw new Error("Invalid sandbox file path");
-  return path.startsWith("/") ? path : `/workspace/${path}`;
+  if (!path || path.includes("\0") || path.split("/").includes("..")) throw new Error("Invalid sandbox file path");
+  if (posix.isAbsolute(path)) {
+    if (path !== "/workspace" && !path.startsWith("/workspace/")) {
+      throw new Error("SFTP file paths must be under /workspace");
+    }
+    path = path.slice("/workspace".length);
+  }
+  return posix.resolve("/", path);
 }
 
 /** Byte-stream socket for ssh2 over ForwardTcp. Node streams bound both queues. */

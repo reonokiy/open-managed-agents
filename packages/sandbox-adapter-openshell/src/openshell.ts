@@ -143,7 +143,7 @@ export class OpenShellSandbox implements SandboxPort, SandboxRuntimePort {
   async writeFileBytes(path: string, bytes: Uint8Array): Promise<string> {
     const target = sftpPath(path);
     await this.withFiles(files => files.writeFile(target, bytes));
-    return target;
+    return "ok";
   }
   private async withFiles<T>(action: (files: SftpFiles) => Promise<T>): Promise<T> {
     const files = await this.connectSftp(this.client, this.ref, AbortSignal.timeout(this.fileTimeoutMs));
@@ -180,6 +180,14 @@ async function sdkConnect(options: OpenShellConnectionOptions): Promise<OpenShel
 export function createOpenShellProvider(
   connect: OpenShellConnector = sdkConnect, connectSftp: SftpConnector = openSftp,
 ): SandboxProviderPort<OpenShellSandbox> {
+  async function verifyWorkdir(client: OpenShellClientPort, ref: OpenShellRef): Promise<void> {
+    const result = await client.exec(ref.name, ["/bin/sh", "-c", "pwd -P"], {
+      workspace: ref.workspace, timeoutSecs: 30, noLoginShell: true, signal: AbortSignal.timeout(30_000),
+    });
+    if (result.exitCode !== 0 || Buffer.from(result.stdout).toString("utf8").trim() !== "/workspace") {
+      throw new Error("OpenShell workload directory must be /workspace for SFTP and exec to share files");
+    }
+  }
   async function connection(env: SandboxFactoryEnv) {
     const options = optionsFromEnvironment(env);
     const [clientCert, clientKey, caCert] = await Promise.all([
@@ -207,6 +215,7 @@ export function createOpenShellProvider(
       try {
         const ready = await client.waitReady(ref.name, options.readyTimeoutSeconds, { workspace: options.workspace });
         if (ready.id !== ref.id || ready.workspace !== options.workspace) throw new Error("Unexpected OpenShell allocation identity");
+        await verifyWorkdir(client, ready);
         const sandbox = new OpenShellSandbox(client, ready, connectSftp, options.fileTimeoutMs);
         return sandbox;
       } catch (error) {
@@ -238,6 +247,7 @@ export function createOpenShellProvider(
       if (ref.phase !== "ready" && ref.phase !== "running") {
         throw new Error("OpenShell sandbox is not running; automatic restart is not supported");
       }
+      await verifyWorkdir(client, ref);
       return new OpenShellSandbox(client, ref, connectSftp, options.fileTimeoutMs);
     },
     async restore() { return unsupported(); },
